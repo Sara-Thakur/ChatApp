@@ -1,4 +1,8 @@
 const User = require('../models/User');
+const { getIsConnected } = require('../config/db');
+
+// In-memory fallback users database
+const memoryUsers = new Map();
 
 /**
  * @desc    Login / Register user (dummy auth — no password)
@@ -8,27 +12,47 @@ const User = require('../models/User');
 const login = async (req, res) => {
   try {
     const { username } = req.body;
+    const cleanUsername = username.trim();
 
-    if (!username || username.trim().length < 2) {
+    if (!username || cleanUsername.length < 2) {
       return res.status(400).json({
         success: false,
         error: 'Username must be at least 2 characters',
       });
     }
 
-    if (username.trim().length > 20) {
+    if (cleanUsername.length > 20) {
       return res.status(400).json({
         success: false,
         error: 'Username cannot exceed 20 characters',
       });
     }
 
+    // Check if database is connected
+    if (!getIsConnected()) {
+      console.log(`⚠️ Database offline — Logging in ${cleanUsername} to memory`);
+      const memoryUser = {
+        _id: `mem_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        username: cleanUsername,
+        isOnline: true,
+        lastSeen: new Date(),
+      };
+      memoryUsers.set(cleanUsername, memoryUser);
+      return res.status(200).json({
+        success: true,
+        data: {
+          id: memoryUser._id,
+          username: memoryUser.username,
+        },
+      });
+    }
+
     // Find existing user or create a new one
-    let user = await User.findOne({ username: username.trim() });
+    let user = await User.findOne({ username: cleanUsername });
 
     if (!user) {
       user = await User.create({
-        username: username.trim(),
+        username: cleanUsername,
         isOnline: true,
         lastSeen: new Date(),
       });
@@ -70,6 +94,14 @@ const login = async (req, res) => {
  */
 const getOnlineUsers = async (req, res) => {
   try {
+    if (!getIsConnected()) {
+      const users = Array.from(memoryUsers.values()).filter(u => u.isOnline);
+      return res.status(200).json({
+        success: true,
+        data: users,
+      });
+    }
+
     const users = await User.find({ isOnline: true })
       .select('username isOnline lastSeen')
       .lean();

@@ -1,4 +1,8 @@
 const Message = require('../models/Message');
+const { getIsConnected } = require('../config/db');
+
+// In-memory fallback messages database
+const memoryMessages = [];
 
 /**
  * @desc    Fetch paginated chat history
@@ -10,6 +14,24 @@ const getMessages = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
     const skip = (page - 1) * limit;
+
+    if (!getIsConnected()) {
+      console.log('⚠️ Database offline — Loading messages from memory');
+      const start = Math.max(0, memoryMessages.length - skip - limit);
+      const end = memoryMessages.length - skip;
+      const paginated = memoryMessages.slice(start, end);
+      
+      return res.status(200).json({
+        success: true,
+        data: paginated,
+        pagination: {
+          page,
+          limit,
+          total: memoryMessages.length,
+          pages: Math.ceil(memoryMessages.length / limit),
+        },
+      });
+    }
 
     const messages = await Message.find()
       .sort({ timestamp: -1 })
@@ -61,9 +83,27 @@ const sendMessage = async (req, res) => {
       });
     }
 
+    const cleanSender = sender.trim();
+    const cleanText = text.trim();
+
+    if (!getIsConnected()) {
+      const message = {
+        _id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        sender: cleanSender,
+        text: cleanText,
+        timestamp: new Date(),
+        status: 'sent',
+      };
+      memoryMessages.push(message);
+      return res.status(201).json({
+        success: true,
+        data: message,
+      });
+    }
+
     const message = await Message.create({
-      sender: sender.trim(),
-      text: text.trim(),
+      sender: cleanSender,
+      text: cleanText,
       timestamp: new Date(),
       status: 'sent',
     });
@@ -95,6 +135,21 @@ const updateMessageStatus = async (req, res) => {
       return res.status(400).json({
         success: false,
         error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+      });
+    }
+
+    if (!getIsConnected()) {
+      const message = memoryMessages.find(m => m._id === req.params.id);
+      if (!message) {
+        return res.status(404).json({
+          success: false,
+          error: 'Message not found',
+        });
+      }
+      message.status = status;
+      return res.status(200).json({
+        success: true,
+        data: message,
       });
     }
 

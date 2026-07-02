@@ -1,5 +1,6 @@
 const Message = require('../models/Message');
 const User = require('../models/User');
+const { getIsConnected } = require('../config/db');
 
 /**
  * Initialize Socket.io event handlers.
@@ -26,16 +27,18 @@ const initializeSocket = (io) => {
         // Store user in memory map
         connectedUsers.set(socket.id, { username, socketId: socket.id });
 
-        // Update user status in database
-        await User.findOneAndUpdate(
-          { username },
-          {
-            isOnline: true,
-            socketId: socket.id,
-            lastSeen: new Date(),
-          },
-          { upsert: true, new: true }
-        );
+        // Update user status in database if connected
+        if (getIsConnected()) {
+          await User.findOneAndUpdate(
+            { username },
+            {
+              isOnline: true,
+              socketId: socket.id,
+              lastSeen: new Date(),
+            },
+            { upsert: true, new: true }
+          );
+        }
 
         // Broadcast updated user list to all clients
         const onlineUsers = Array.from(connectedUsers.values());
@@ -61,21 +64,34 @@ const initializeSocket = (io) => {
           return;
         }
 
-        // Save message to database
-        const message = await Message.create({
-          sender: sender.trim(),
-          text: text.trim(),
-          timestamp: new Date(),
-          status: 'sent',
-        });
+        const cleanSender = sender.trim();
+        const cleanText = text.trim();
+        let messageData;
 
-        const messageData = {
-          _id: message._id,
-          sender: message.sender,
-          text: message.text,
-          timestamp: message.timestamp,
-          status: message.status,
-        };
+        // Save message to database if connected, else create in-memory payload
+        if (getIsConnected()) {
+          const message = await Message.create({
+            sender: cleanSender,
+            text: cleanText,
+            timestamp: new Date(),
+            status: 'sent',
+          });
+          messageData = {
+            _id: message._id,
+            sender: message.sender,
+            text: message.text,
+            timestamp: message.timestamp,
+            status: message.status,
+          };
+        } else {
+          messageData = {
+            _id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            sender: cleanSender,
+            text: cleanText,
+            timestamp: new Date(),
+            status: 'sent',
+          };
+        }
 
         // Broadcast to ALL connected clients (including sender)
         io.emit('new_message', messageData);
@@ -83,9 +99,11 @@ const initializeSocket = (io) => {
         // Mark as delivered for all connected users except sender
         setTimeout(async () => {
           try {
-            await Message.findByIdAndUpdate(message._id, { status: 'delivered' });
+            if (getIsConnected()) {
+              await Message.findByIdAndUpdate(messageData._id, { status: 'delivered' });
+            }
             io.emit('message_status_update', {
-              messageId: message._id,
+              messageId: messageData._id,
               status: 'delivered',
             });
           } catch (err) {
@@ -93,7 +111,7 @@ const initializeSocket = (io) => {
           }
         }, 500);
 
-        console.log(`💬 ${sender}: ${text.substring(0, 50)}...`);
+        console.log(`💬 ${cleanSender}: ${cleanText.substring(0, 50)}...`);
       } catch (error) {
         console.error('Error handling send_message:', error.message);
         socket.emit('error_message', { error: 'Failed to send message' });
@@ -126,14 +144,16 @@ const initializeSocket = (io) => {
 
         if (!messageIds || !Array.isArray(messageIds) || !reader) return;
 
-        // Update messages to 'read' status
-        await Message.updateMany(
-          {
-            _id: { $in: messageIds },
-            sender: { $ne: reader }, // Don't mark own messages as read
-          },
-          { status: 'read' }
-        );
+        // Update messages to 'read' status if database is connected
+        if (getIsConnected()) {
+          await Message.updateMany(
+            {
+              _id: { $in: messageIds },
+              sender: { $ne: reader }, // Don't mark own messages as read
+            },
+            { status: 'read' }
+          );
+        }
 
         // Notify all clients about the status update
         messageIds.forEach((messageId) => {
@@ -159,15 +179,17 @@ const initializeSocket = (io) => {
           // Remove from memory map
           connectedUsers.delete(socket.id);
 
-          // Update database
-          await User.findOneAndUpdate(
-            { username: user.username },
-            {
-              isOnline: false,
-              socketId: null,
-              lastSeen: new Date(),
-            }
-          );
+          // Update database if connected
+          if (getIsConnected()) {
+            await User.findOneAndUpdate(
+              { username: user.username },
+              {
+                isOnline: false,
+                socketId: null,
+                lastSeen: new Date(),
+              }
+            );
+          }
 
           // Broadcast updated user list
           const onlineUsers = Array.from(connectedUsers.values());
